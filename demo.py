@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from torchvision import transforms
 from model import gaze_network
+import glob
 
 from head_pose import HeadPoseEstimator
 
@@ -16,12 +17,11 @@ trans = transforms.Compose([
                              std=[0.229, 0.224, 0.225]),
     ])
 
-def estimateHeadPose(landmarks, face_model, camera, distortion, iterate=True):
+def estimateHeadPose(landmarks, face_model, camera, distortion, iterate=True): # (6,1,2), (6,1,3), camera_matrix(f,u0,v0)
     ret, rvec, tvec = cv2.solvePnP(face_model, landmarks, camera, distortion, flags=cv2.SOLVEPNP_EPNP)
 
     ## further optimize
-    if iterate:
-        ret, rvec, tvec = cv2.solvePnP(face_model, landmarks, camera, distortion, rvec, tvec, True)
+    if iterate: ret, rvec, tvec = cv2.solvePnP(face_model, landmarks, camera, distortion, rvec, tvec, True)
 
     return rvec, tvec
 
@@ -41,7 +41,7 @@ def draw_gaze(image_in, pitchyaw, thickness=2, color=(0, 0, 255)):
 
     return image_out
 
-def normalizeData_face(img, face_model, landmarks, hr, ht, cam):
+def normalizeData_face(img, face_model, landmarks, hr, ht, cam): # (754, 1024, 3), (6,3), (6,1,2), (3,1), (3,1), (3,3)
     ## normalized camera parameters
     focal_norm = 960  # focal length of normalized camera
     distance_norm = 600  # normalized distance between eye and camera
@@ -94,82 +94,117 @@ def normalizeData_face(img, face_model, landmarks, hr, ht, cam):
 
     return img_warped, landmarks_warped
 
-if __name__ == '__main__':
-    img_file_name = './example/input/cam00.JPG'
-    print('load input face image: ', img_file_name)
-    image = cv2.imread(img_file_name)
 
-    predictor = dlib.shape_predictor('./modules/shape_predictor_68_face_landmarks.dat')
-    # face_detector = dlib.cnn_face_detection_model_v1('./modules/mmod_human_face_detector.dat')
-    face_detector = dlib.get_frontal_face_detector()  ## this face detector is not very powerful
-    detected_faces = face_detector(image, 1)
-    if len(detected_faces) == 0:
-        print('warning: no detected face')
-        exit(0)
-    print('detected one face')
-    shape = predictor(image, detected_faces[0]) ## only use the first detected face (assume that each input image only contains one face)
-    shape = face_utils.shape_to_np(shape)
-    landmarks = []
-    for (x, y) in shape:
-        landmarks.append((x, y))
-    landmarks = np.asarray(landmarks)
+image_names = glob.glob('./example/input/*.jpg')
 
-    # load camera information
-    cam_file_name = './example/input/cam00.xml'  # this is camera calibration information file obtained with OpenCV
-    if not os.path.isfile(cam_file_name):
-        print('no camera calibration file is found.')
-        exit(0)
-    fs = cv2.FileStorage(cam_file_name, cv2.FILE_STORAGE_READ)
-    camera_matrix = fs.getNode('Camera_Matrix').mat() # camera calibration information is used for data normalization
-    camera_distortion = fs.getNode('Distortion_Coefficients').mat()
+for imnum, image_name in enumerate(image_names):
+    # image_name = './example/input/cam00.JPG'
+    print('load input face image: ', image_name)
+    image = cv2.imread(image_name)
+    print('image shape: ' + str(image.shape))
 
-    print('estimate head pose')
-    # load face model
-    face_model_load = np.loadtxt('face_model.txt')  # Generic face model with 3D facial landmarks
-    landmark_use = [20, 23, 26, 29, 15, 19]  # we use eye corners and nose conners
-    face_model = face_model_load[landmark_use, :]
-    # estimate the head pose,
-    ## the complex way to get head pose information, eos library is required,  probably more accurrated
-    # landmarks = landmarks.reshape(-1, 2)
-    # head_pose_estimator = HeadPoseEstimator()
-    # hr, ht, o_l, o_r, _ = head_pose_estimator(image, landmarks, camera_matrix[cam_id])
-    ## the easy way to get head pose information, fast and simple
-    facePts = face_model.reshape(6, 1, 3)
-    landmarks_sub = landmarks[[36, 39, 42, 45, 31, 35], :]
-    landmarks_sub = landmarks_sub.astype(float)  # input to solvePnP function must be float type
-    landmarks_sub = landmarks_sub.reshape(6, 1, 2)  # input to solvePnP requires such shape
-    hr, ht = estimateHeadPose(landmarks_sub, facePts, camera_matrix, camera_distortion)
 
-    # data normalization method
-    print('data normalization, i.e. crop the face image')
-    img_normalized, landmarks_normalized = normalizeData_face(image, face_model, landmarks_sub, hr, ht, camera_matrix)
 
-    print('load gaze estimator')
-    model = gaze_network()
-    model.cuda() # comment this line out if you are not using GPU
-    pre_trained_model_path = './ckpt/epoch_24_ckpt.pth.tar'
-    if not os.path.isfile(pre_trained_model_path):
-        print('the pre-trained gaze estimation model does not exist.')
-        exit(0)
-    else:
-        print('load the pre-trained model: ', pre_trained_model_path)
-    ckpt = torch.load(pre_trained_model_path)
-    model.load_state_dict(ckpt['model_state'], strict=True)  # load the pre-trained model
-    model.eval()  # change it to the evaluation mode
-    input_var = img_normalized[:, :, [2, 1, 0]]  # from BGR to RGB
-    input_var = trans(input_var)
-    input_var = torch.autograd.Variable(input_var.float().cuda())
-    input_var = input_var.view(1, input_var.size(0), input_var.size(1), input_var.size(2))  # the input must be 4-dimension
-    pred_gaze = model(input_var)  # get the output gaze direction, this is 2D output as pitch and raw rotation
-    pred_gaze = pred_gaze[0] # here we assume there is only one face inside the image, then the first one is the prediction
-    pred_gaze_np = pred_gaze.cpu().data.numpy()  # convert the pytorch tensor to numpy array
 
-    print('prepare the output')
-    # draw the facial landmarks
-    landmarks_normalized = landmarks_normalized.astype(int) # landmarks after data normalization
-    for (x, y) in landmarks_normalized:
-        cv2.circle(img_normalized, (x, y), 5, (0, 255, 0), -1)
-    face_patch_gaze = draw_gaze(img_normalized, pred_gaze_np)  # draw gaze direction on the normalized face image
-    output_path = 'example/output/results_gaze.jpg'
-    print('save output image to: ', output_path)
-    cv2.imwrite(output_path, face_patch_gaze)
+    # DETECT FACE
+
+    face_detector = dlib.cnn_face_detection_model_v1('./modules/mmod_human_face_detector.dat')
+    # face_detector = dlib.get_frontal_face_detector()  ## this face detector is not very powerful
+    detected_faces = face_detector(image, 3) # [[(2165, 1061) (4152, 3049)]]
+    if len(detected_faces) == 0: exit('warning: no detected face')
+    print('detected %d faces'%len(detected_faces))
+
+    for facenum, det in enumerate(detected_faces):
+        rec = dlib.rectangle(det.rect.left(),det.rect.top(),det.rect.right(),det.rect.bottom())
+
+        # FACE LANDMARK
+
+        predictor = dlib.shape_predictor('./modules/shape_predictor_68_face_landmarks.dat')
+        shape = predictor(image, rec) # predict for each face
+        shape = face_utils.shape_to_np(shape) # (68,2)
+        landmarks = []
+        for (x, y) in shape: landmarks.append((x, y))
+        landmarks = np.asarray(landmarks) # (68, 2)
+
+        # LOAD CAMERA
+
+        # load camera information
+        cam_file_name = './example/input/cam00.xml'  # this is camera calibration information file obtained with OpenCV
+        if not os.path.isfile(cam_file_name): exit('no camera calibration file is found.')
+        fs = cv2.FileStorage(cam_file_name, cv2.FILE_STORAGE_READ)
+        print(fs)
+        camera_matrix = fs.getNode('Camera_Matrix').mat() # camera calibration information is used for data normalization
+        camera_distortion = fs.getNode('Distortion_Coefficients').mat()
+        camera_matrix[0][2] = int(image.shape[1]/2)
+        camera_matrix[1][2] = int(image.shape[0]/2)
+
+        # HEAD POSE
+
+        print('estimate head pose')
+        # load face model
+        face_model_load = np.loadtxt('face_model.txt') # (50,3)  # Generic face model with 3D facial landmarks
+        landmark_use = [20, 23, 26, 29, 15, 19]  # we use eye corners and nose conners
+        face_model = face_model_load[landmark_use, :] # (6,3)
+        # estimate the head pose,
+        ## the complex way to get head pose information, eos library is required,  probably more accurrated
+        # landmarks = landmarks.reshape(-1, 2)
+        # head_pose_estimator = HeadPoseEstimator()
+        # hr, ht, o_l, o_r, _ = head_pose_estimator(image, landmarks, camera_matrix[cam_id])
+        ## the easy way to get head pose information, fast and simple
+        facePts = face_model.reshape(6, 1, 3) # (6,1,3)
+        landmarks_sub = landmarks[[36, 39, 42, 45, 31, 35], :] # (6,2)
+        landmarks_sub = landmarks_sub.astype(float)  # input to solvePnP function must be float type
+        landmarks_sub = landmarks_sub.reshape(6, 1, 2)  # input to solvePnP requires such shape
+        hr, ht = estimateHeadPose(landmarks_sub, facePts, camera_matrix, camera_distortion) # (3,1), (3,1)
+
+        # DATA NORMALIZATION
+
+        # data normalization method
+        print('data normalization, i.e. crop the face image')
+        img_normalized, landmarks_normalized = normalizeData_face(image, face_model, landmarks_sub, hr, ht, camera_matrix)
+        # print(img_normalized.shape) # (224, 224, 3)
+        # print(landmarks_normalized.shape) # (6,2)
+        # cv2.imwrite('./example/output/nor_face.jpg', img_normalized)
+
+
+
+
+
+        # COMPUTE GAZE
+
+        print('load gaze estimator')
+        model = gaze_network()
+        model.cuda() # comment this line out if you are not using GPU
+        pre_trained_model_path = '/home/zhangmf/Documents/data/checkpoints/Gaze/ETH-XGaze/epoch_24_ckpt.pth.tar'
+        if not os.path.isfile(pre_trained_model_path): exit('the pre-trained gaze estimation model does not exist.')
+        else: print('load the pre-trained model: ', pre_trained_model_path)
+        ckpt = torch.load(pre_trained_model_path)
+        model.load_state_dict(ckpt['model_state'], strict=True)  # load the pre-trained model
+        model.eval()  # change it to the evaluation mode
+        input_var = img_normalized[:, :, [2, 1, 0]]  # from BGR to RGB
+        input_var = trans(input_var)
+        input_var = torch.autograd.Variable(input_var.float().cuda())
+        input_var = input_var.view(1, input_var.size(0), input_var.size(1), input_var.size(2))  # the input must be 4-dimension
+        pred_gaze = model(input_var)  # get the output gaze direction, this is 2D output as pitch and raw rotation
+        pred_gaze = pred_gaze[0] # here we assume there is only one face inside the image, then the first one is the prediction
+        pred_gaze_np = pred_gaze.cpu().data.numpy()  # convert the pytorch tensor to numpy array
+        # print(pred_gaze_np)
+        # exit(0)
+
+
+
+
+
+        # DRAW GAZE
+
+        print('prepare the output')
+        # draw the facial landmarks
+        landmarks_normalized = landmarks_normalized.astype(int) # landmarks after data normalization
+        for (x, y) in landmarks_normalized:
+            cv2.circle(img_normalized, (x, y), 5, (0, 255, 0), -1)
+        # print(pred_gaze_np,pred_gaze_np.shape, hr.shape, ht.shape)
+        face_patch_gaze = draw_gaze(img_normalized, pred_gaze_np)  # draw gaze direction on the normalized face image
+        output_path = 'example/output/%d_%d_results_gaze.jpg'%(imnum,facenum)
+        print('save output image to: ', output_path)
+        cv2.imwrite(output_path, face_patch_gaze)
+        print('over')

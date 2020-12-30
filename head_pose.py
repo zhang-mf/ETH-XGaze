@@ -37,7 +37,7 @@ class HeadPoseEstimator(object):
 
     def __init__(self):
         cwd = os.path.dirname(__file__)
-        base_dir = '/local/home/xucong/project/GGD/lib' + '/eos'
+        base_dir = './example/'
 
         # Morphable model definition
         model = eos.morphablemodel.load_model(base_dir + '/share/sfm_shape_3448.bin')
@@ -94,6 +94,15 @@ class HeadPoseEstimator(object):
 
         # Initial fit
         camera_matrix = intrinsics
+        print(sfm_points_ibug_subset.shape, landmarks_2D.shape)
+
+        sfm_points_ibug_subset = sfm_points_ibug_subset.astype(float)
+        landmarks_2D = landmarks_2D.astype(float)
+        sfm_points_ibug_subset = sfm_points_ibug_subset.reshape(50, 1, 3)
+        landmarks_2D = landmarks_2D.reshape(50, 1, 2)
+
+        print(sfm_points_ibug_subset.shape, landmarks_2D.shape)
+        
         success, rvec, tvec, inliers = cv.solvePnPRansac(
             sfm_points_ibug_subset, landmarks_2D, camera_matrix, None,
             flags=cv.SOLVEPNP_EPNP)
