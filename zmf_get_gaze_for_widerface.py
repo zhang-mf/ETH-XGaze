@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from torchvision import transforms
 from model import gaze_network
-import glob
+import glob,tqdm
 
 from head_pose import HeadPoseEstimator
 
@@ -18,6 +18,10 @@ trans = transforms.Compose([
     ])
 
 def estimateHeadPose(landmarks, face_model, camera, distortion, iterate=True): # (6,1,2), (6,1,3), camera_matrix(f,u0,v0)
+    # print(face_model.shape) # (6, 1, 3)
+    # print(landmarks.shape) # (6, 1, 2)
+    
+
     ret, rvec, tvec = cv2.solvePnP(face_model, landmarks, camera, distortion, flags=cv2.SOLVEPNP_EPNP)
 
     ## further optimize
@@ -42,8 +46,9 @@ def draw_gaze(image_in, pitchyaw, thickness=2, color=(0, 0, 255)):
     return image_out
 
 def normalizeData_face(img, face_model, landmarks, hr, ht, cam): # (754, 1024, 3), (6,3), (6,1,2), (3,1), (3,1), (3,3)
+
     ## normalized camera parameters
-    focal_norm = 960  # focal length of normalized camera
+    focal_norm = 1200.  # focal length of normalized camera
     distance_norm = 600  # normalized distance between eye and camera
     roiSize = (224, 224)  # size of cropped eye image
 
@@ -95,27 +100,17 @@ def normalizeData_face(img, face_model, landmarks, hr, ht, cam): # (754, 1024, 3
     return img_warped, landmarks_warped
 
 
-image_names = glob.glob('./example/input/*.jpg')
+image_names = glob.glob('../../data/dataset/Face/retinaface/widerface-all/train/widerface-faces/*/*.jpg')
+# image_names = glob.glob('../../data/dataset/Face/retinaface/widerface-all/train/widerface-faces-05/*/*.jpg')
+image_names.sort()
 
-for imnum, image_name in enumerate(image_names):
+for imnum, image_name in enumerate(tqdm.tqdm(image_names)):
     # image_name = './example/input/cam00.JPG'
-    print('load input face image: ', image_name)
+    # print('load input face image: ', image_name)
     image = cv2.imread(image_name)
-    print('image shape: ' + str(image.shape))
+    # print('image shape: ' + str(image.shape))
 
-
-
-
-    # DETECT FACE
-
-    # face_detector = dlib.cnn_face_detection_model_v1('./modules/mmod_human_face_detector.dat')
-    # face_detector = dlib.get_frontal_face_detector()  ## this face detector is not very powerful
-    # detected_faces = face_detector(image, 1) # [[(2165, 1061) (4152, 3049)]]
-    # if len(detected_faces) == 0: exit('warning: no detected face')
-    # print('detected %d faces'%len(detected_faces))
-
-    # for facenum, det in enumerate(detected_faces):
-    rec = dlib.rectangle(0,0,224,224)
+    rec = dlib.rectangle(0,0,image.shape[0],image.shape[1])
 
     # FACE LANDMARK
 
@@ -132,15 +127,17 @@ for imnum, image_name in enumerate(image_names):
     cam_file_name = './example/input/cam00.xml'  # this is camera calibration information file obtained with OpenCV
     if not os.path.isfile(cam_file_name): exit('no camera calibration file is found.')
     fs = cv2.FileStorage(cam_file_name, cv2.FILE_STORAGE_READ)
-    print(fs)
     camera_matrix = fs.getNode('Camera_Matrix').mat() # camera calibration information is used for data normalization
     camera_distortion = fs.getNode('Distortion_Coefficients').mat()
-    camera_matrix[0][2] = int(image.shape[1]/2)
-    camera_matrix[1][2] = int(image.shape[0]/2)
+    camera_matrix[0][0] = 224. # 960.
+    camera_matrix[1][1] = 224. # 960. camera_to_be_normed
+    camera_matrix[0][2] = 112.
+    camera_matrix[1][2] = 112.
+
 
     # HEAD POSE
 
-    print('estimate head pose')
+    # print('estimate head pose')
     # load face model
     face_model_load = np.loadtxt('face_model.txt') # (50,3)  # Generic face model with 3D facial landmarks
     landmark_use = [20, 23, 26, 29, 15, 19]  # we use eye corners and nose conners
@@ -160,11 +157,11 @@ for imnum, image_name in enumerate(image_names):
     # DATA NORMALIZATION
 
     # data normalization method
-    print('data normalization, i.e. crop the face image')
+    # print('data normalization, i.e. crop the face image')
     img_normalized, landmarks_normalized = normalizeData_face(image, face_model, landmarks_sub, hr, ht, camera_matrix)
     # print(img_normalized.shape) # (224, 224, 3)
     # print(landmarks_normalized.shape) # (6,2)
-    cv2.imwrite('./example/output/nor_face.jpg', img_normalized)
+    # cv2.imwrite('./example/output/nor_face.jpg', img_normalized)
 
 
 
@@ -172,15 +169,15 @@ for imnum, image_name in enumerate(image_names):
 
     # COMPUTE GAZE
 
-    print('load gaze estimator')
+    # print('load gaze estimator')
     model = gaze_network()
     model.cuda() # comment this line out if you are not using GPU
     pre_trained_model_path = '/home/zhangmf/Documents/data/checkpoints/Gaze/ETH-XGaze/epoch_24_ckpt.pth.tar'
     if not os.path.isfile(pre_trained_model_path):
         print('the pre-trained gaze estimation model does not exist.')
-        exit(0)
-    else:
-        print('load the pre-trained model: ', pre_trained_model_path)
+        exit()
+    # else:
+    #     print('load the pre-trained model: ', pre_trained_model_path)
     ckpt = torch.load(pre_trained_model_path)
     model.load_state_dict(ckpt['model_state'], strict=True)  # load the pre-trained model
     model.eval()  # change it to the evaluation mode
@@ -198,14 +195,23 @@ for imnum, image_name in enumerate(image_names):
 
     # DRAW GAZE
 
-    print('prepare the output')
+    # print('prepare the output')
     # draw the facial landmarks
     landmarks_normalized = landmarks_normalized.astype(int) # landmarks after data normalization
     for (x, y) in landmarks_normalized:
         cv2.circle(img_normalized, (x, y), 5, (0, 255, 0), -1)
     # print(pred_gaze_np,pred_gaze_np.shape, hr.shape, ht.shape)
     face_patch_gaze = draw_gaze(img_normalized, pred_gaze_np)  # draw gaze direction on the normalized face image
-    output_path = 'example/output/%s'%(os.path.basename(image_name))
-    print('save output image to: ', output_path)
-    cv2.imwrite(output_path, face_patch_gaze)
-    print('over')
+    output_path = image_name.replace('/widerface-faces/','/widerface-faces-camera1200/')
+    # print(hr)
+    # print(ht)
+    # print(pred_gaze_np)
+    # print(output_path)
+    new_outpath = '%s_%f_%f_%f_%f_%f_%f_%f_%f.jpg'%(output_path[:-4],pred_gaze_np[0],pred_gaze_np[1],hr[0,0],hr[1,0],hr[2,0],ht[0,0],ht[1,0],ht[2,0])
+    # print(new_outpath)
+    if not os.path.exists(os.path.dirname(new_outpath)):
+        os.makedirs(os.path.dirname(new_outpath))
+    # print('save output image to: ', new_outpath)
+    cv2.imwrite(new_outpath, face_patch_gaze)
+    # print('over')
+    # break
